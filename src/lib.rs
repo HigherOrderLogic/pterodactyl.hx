@@ -263,20 +263,26 @@ fn create_module() -> FFIModule {
         .register_fn(
             "term/color-attribute",
             |attribute: &TermColorAttribute| match attribute.0 {
-                ColorAttribute::TrueColorWithPaletteFallback(SrgbaTuple(r, g, b, a), _) => vec![
-                    (r as isize).into_ffi_val().unwrap(),
-                    (g as isize).into_ffi_val().unwrap(),
-                    (b as isize).into_ffi_val().unwrap(),
-                    (a as isize).into_ffi_val().unwrap(),
-                ]
-                .into_ffi_val(),
-                ColorAttribute::TrueColorWithDefaultFallback(SrgbaTuple(r, g, b, a)) => vec![
-                    (r as isize).into_ffi_val().unwrap(),
-                    (g as isize).into_ffi_val().unwrap(),
-                    (b as isize).into_ffi_val().unwrap(),
-                    (a as isize).into_ffi_val().unwrap(),
-                ]
-                .into_ffi_val(),
+                ColorAttribute::TrueColorWithPaletteFallback(srgba, _) => {
+                    let (r, g, b, a) = srgba_to_byte_components(srgba);
+                    vec![
+                        (r as isize).into_ffi_val().unwrap(),
+                        (g as isize).into_ffi_val().unwrap(),
+                        (b as isize).into_ffi_val().unwrap(),
+                        (a as isize).into_ffi_val().unwrap(),
+                    ]
+                    .into_ffi_val()
+                }
+                ColorAttribute::TrueColorWithDefaultFallback(srgba) => {
+                    let (r, g, b, a) = srgba_to_byte_components(srgba);
+                    vec![
+                        (r as isize).into_ffi_val().unwrap(),
+                        (g as isize).into_ffi_val().unwrap(),
+                        (b as isize).into_ffi_val().unwrap(),
+                        (a as isize).into_ffi_val().unwrap(),
+                    ]
+                    .into_ffi_val()
+                }
                 ColorAttribute::PaletteIndex(index) => (index as usize).into_ffi_val(),
                 ColorAttribute::Default => false.into_ffi_val(),
             },
@@ -286,8 +292,8 @@ fn create_module() -> FFIModule {
             |attribute: &TermColorAttribute, shared_vec: FFIArg| {
                 if let FFIArg::VectorRef(VectorRef { mut vec, .. }) = shared_vec {
                     match attribute.0 {
-                        ColorAttribute::TrueColorWithPaletteFallback(SrgbaTuple(r, g, b, a), _) => {
-                            // Update in place.
+                        ColorAttribute::TrueColorWithPaletteFallback(srgba, _) => {
+                            let (r, g, b, a) = srgba_to_byte_components(srgba);
                             vec[0] = FFIValue::IntV(r as isize);
                             vec[1] = FFIValue::IntV(g as isize);
                             vec[2] = FFIValue::IntV(b as isize);
@@ -295,7 +301,8 @@ fn create_module() -> FFIModule {
 
                             true.into_ffi_val()
                         }
-                        ColorAttribute::TrueColorWithDefaultFallback(SrgbaTuple(r, g, b, a)) => {
+                        ColorAttribute::TrueColorWithDefaultFallback(srgba) => {
+                            let (r, g, b, a) = srgba_to_byte_components(srgba);
                             vec[0] = FFIValue::IntV(r as isize);
                             vec[1] = FFIValue::IntV(g as isize);
                             vec[2] = FFIValue::IntV(b as isize);
@@ -607,6 +614,12 @@ fn create_module() -> FFIModule {
         })
         .register_fn("vte/scroll-down", |term: &mut VirtualTerminal| {
             term.scroll_up_modifier = (term.scroll_up_modifier + 1).min(0);
+        })
+        .register_fn("vte/scroll-offset", |term: &VirtualTerminal| -> isize {
+            term.scroll_up_modifier as isize
+        })
+        .register_fn("vte/send-paste!", |term: &mut VirtualTerminal, text: String| -> bool {
+            term.terminal.send_paste(&text).is_ok()
         });
 
     module
@@ -632,6 +645,12 @@ fn update_cell(cell: &Cell, mut mut_str: RMut<'_, RString>, bg: FFIArg, fg: FFIA
 struct TermColorAttribute(ColorAttribute);
 
 impl Custom for TermColorAttribute {}
+
+/// SrgbaTuple is f32 in 0..1; scale to bytes for Steel.
+fn srgba_to_byte_components(SrgbaTuple(r, g, b, a): SrgbaTuple) -> (u8, u8, u8, u8) {
+    let to_byte = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+    (to_byte(r), to_byte(g), to_byte(b), to_byte(a))
+}
 
 fn create_native_pty_system(command: String) -> PtyProcess {
     let pty_system = NativePtySystem::default();
