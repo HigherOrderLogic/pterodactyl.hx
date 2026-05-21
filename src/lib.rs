@@ -618,9 +618,12 @@ fn create_module() -> FFIModule {
         .register_fn("vte/scroll-offset", |term: &VirtualTerminal| -> isize {
             term.scroll_up_modifier as isize
         })
-        .register_fn("vte/send-paste!", |term: &mut VirtualTerminal, text: String| -> bool {
-            term.terminal.send_paste(&text).is_ok()
-        });
+        .register_fn(
+            "vte/send-paste!",
+            |term: &mut VirtualTerminal, text: String| -> bool {
+                term.terminal.send_paste(&text).is_ok()
+            },
+        );
 
     module
 }
@@ -646,7 +649,6 @@ struct TermColorAttribute(ColorAttribute);
 
 impl Custom for TermColorAttribute {}
 
-/// SrgbaTuple is f32 in 0..1; scale to bytes for Steel.
 fn srgba_to_byte_components(SrgbaTuple(r, g, b, a): SrgbaTuple) -> (u8, u8, u8, u8) {
     let to_byte = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
     (to_byte(r), to_byte(g), to_byte(b), to_byte(a))

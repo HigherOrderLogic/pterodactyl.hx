@@ -37,5 +37,5 @@ Load the plugin by adding the following line to `~/.config/helix/init.scm`:
 - Drag the title bar to move the window.
 - Click the `×` at the right of the title bar to kill the terminal.
 - Click in the body to focus, then click+drag to select text.
-- `Ctrl-Shift-C` copies the selection if your host terminal lets it through; otherwise bind `:copy-terminal-selection` to a key in your Helix config (most host terminals like gnome-terminal, alacritty, kitty, and iTerm capture `Ctrl-Shift-C` themselves before Helix sees it).
+- `Ctrl-Shift-C` copies the selection if your host terminal lets it through; otherwise bind `:copy-terminal-selection` to a key in your Helix config (most terminals capture `Ctrl-Shift-C` themselves before Helix sees it).
 

@@ -103,7 +103,7 @@
 (define bg-attr (ffi-vector #f #f #f #f))
 (define fg-attr (ffi-vector #f #f #f #f))
 
-;; Save Color around rather than allocate a new one each time.
+;; Save color around rather than allocate a new one each time.
 ;; `scratch` is mutated for explicit colors; `fallback` is returned
 ;; untouched for default cells so earlier colors don't leak in.
 (define (attribute->color attr bg/fg scratch fallback)
@@ -303,8 +303,7 @@
   ;; Update the box to now show this
   (set-box! (Terminal-focused? term) #t)
 
-  ;; Floating terminals draw over the editor, no need to reserve
-  ;; right-edge space the way the docked terminal does.
+  ;; Floating terminals draw over the editor, so we don't set the clip
   (unless (Terminal-floating? term)
     (set-editor-clip-right! *default-terminal-cols*))
 
@@ -502,7 +501,6 @@
     (define style-cursor (Terminal-style-cursor state))
 
     ;; Theme colors are the defaults for cells with the default attribute.
-    ;; Don't mutate them or earlier explicit colors bleed into later defaults.
     (define theme-fg (or (style->fg (theme->fg *helix.cx*)) Color/White))
     (define theme-bg (style->bg (theme->bg *helix.cx*)))
 
@@ -528,8 +526,7 @@
                   block-area
                   (make-block (theme->bg *helix.cx*) (theme->bg *helix.cx*) "all" "plain"))
 
-    ;; Floating terminals get a title bar on the top border (name on the
-    ;; left, close on the right) and a resize grip in the bottom-right.
+    ;; floating terminals get a title bar on the top border and a resize in the bottom-right.
     (when (Terminal-floating? state)
       (define title-style
         (if (unbox (Terminal-focused? state)) title-bar-focused-style title-bar-unfocused-style))
@@ -546,12 +543,14 @@
       (frame-set-string! frame
                          (- (+ (area-x block-area) (area-width block-area)) 1)
                          (- (+ (area-y block-area) (area-height block-area)) 1)
+                         ;; TODO: Make this configurable?
+                         ;; Not in love with this but it seems okay for now
                          "⠿"
                          resize-handle-style))
 
-    ;; Normalize once per frame so the inner loop just does a point-in-rect
+    ;; normalize once per frame so the inner loop just does a point-in-rect
     ;; check. Selection y is physical; subtract current scroll to get the
-    ;; visible row so the highlight tracks scrolled content.
+    ;; visible row so the highlight tracks the scrolled content.
     (define sel-start (unbox (Terminal-sel-start state)))
     (define sel-end (unbox (Terminal-sel-end state)))
     (define sel-active? (and sel-start sel-end))
@@ -609,7 +608,7 @@
 (define on-click-start (mutable-vector 0 0))
 (define on-click-end (mutable-vector 0 0))
 
-;;;;; Selection ;;;;;
+;;;;; Selection stuff ;;;;;
 
 (define selection-bg-fallback (Color/rgb 60 100 180))
 
@@ -644,9 +643,6 @@
     [(= y ey) (<= x ex)]
     [else #t]))
 
-;; sy/ey are physical; convert via scroll-offset to index into `lines`.
-;; Scrollback rows are skipped since vte/lines only exposes the visible
-;; window. Rows are joined with "\n".
 (define (extract-selection-text lines sx sy ex ey scroll-offset)
   (define vis-sy (- sy scroll-offset))
   (define vis-ey (- ey scroll-offset))
@@ -666,7 +662,8 @@
                (- line-len 1)))
          (define safe-start (min x-start line-len))
          (define safe-end (min (+ x-end 1) line-len))
-         ;; vte pads each row out with trailing spaces - drop them.
+         ;; vte pads each row out with trailing spaces, we can trim that from the copy
+         ;; selection
          (define row
            (if (>= safe-start safe-end)
                ""
@@ -690,6 +687,11 @@
   (event-mouse-row e))
 (define (event-col e)
   (event-mouse-col e))
+
+;; Investigate to make sure the JIT can do something with this. Not sure
+;; how foreign function calls to the host will get handled here; I guess
+;; it does the pessimistic call out, but maybe we can inline that a bit
+;; better?
 
 (define (in-title-bar? event block-area)
   (and (= (event-row event) (area-y block-area))
@@ -722,10 +724,11 @@
        (>= (event-row event) (area-y block-area))
        (< (event-row event) (+ (area-y block-area) (area-height block-area)))))
 
-;;;;; Multi-click (double = word, triple = line) ;;;;;
+;;;;; Multi-click stuff ;;;;;
 
 (define *multi-click-window-ms* 400)
 
+;; TODO: Make these boxes instead
 (define *last-click-ms* 0)
 (define *last-click-x* -1)
 (define *last-click-y* -1)
@@ -785,7 +788,7 @@
     (set-box! (Terminal-sel-start state) (cons 0 cy-phys))
     (set-box! (Terminal-sel-end state) (cons (max 0 (- line-len 1)) cy-phys))))
 
-;; Write the selection to helix's + register (the system clipboard).
+;; Write the selection to the system keyboard, the + register is the keyboard.
 (define (copy-selection-to-clipboard state)
   (define sel-start (unbox (Terminal-sel-start state)))
   (define sel-end (unbox (Terminal-sel-end state)))
@@ -814,28 +817,25 @@
        ;; Mouse event down - any mouse button
        [(0 1 2)
         (cond
-          ;; Close button: kill the terminal.
+          ;; close button
           [(and (Terminal-floating? state) (in-close-button? event block-area))
            (kill-active-terminal)
            event-result/close]
 
-          ;; Bottom-right corner grip: start a resize drag.
+          ;; bottom-right corner grip
           [(and (Terminal-floating? state) (in-resize-handle? event block-area))
            (vector-set! on-click-start 0 (event-mouse-col event))
            (vector-set! on-click-start 1 (event-mouse-row event))
            (set-box! (Terminal-drag-mode state) 'resize)
            event-result/consume]
 
-          ;; Title bar (excluding the close button): start a window drag.
+          ;; title bar, start a window drag.
           [(and (Terminal-floating? state) (in-title-bar? event block-area))
            (vector-set! on-click-start 0 (event-mouse-col event))
            (vector-set! on-click-start 1 (event-mouse-row event))
            (set-box! (Terminal-drag-mode state) 'window)
            event-result/consume]
 
-          ;; Cell area: first click takes focus (no selection so the user
-          ;; doesn't accidentally start one); subsequent clicks start a
-          ;; selection that collapses to the click point.
           [(in-cell-area? event block-area)
            (cond
              [(not (unbox (Terminal-focused? state)))
@@ -857,7 +857,6 @@
                  (set! *click-count* 0)
                  event-result/consume]
                 [else
-                 ;; Store y as physical so the selection follows scrolled content.
                  (define phys-cell (cons cx (+ cy (vte/scroll-offset *vte*))))
                  (set-box! (Terminal-sel-start state) phys-cell)
                  (set-box! (Terminal-sel-end state) phys-cell)
@@ -924,9 +923,8 @@
               (vector-set! on-click-start 1 (event-mouse-row event))
               (define proposed-cols (+ (unbox (Terminal-viewport-width state)) delta-x))
               (define proposed-rows (+ (unbox (Terminal-viewport-height state)) delta-y))
-              ;; x-term is a center anchor (left = x-term - vw/2), so
-              ;; growing extends both sides. Cap so neither edge leaves
-              ;; the screen.
+              ;; TODO: I don't love this behavior, maybe just have the right side extend?
+              ;; x-term is a center anchor, so growing extends both sides.
               (define x-term (unbox (Terminal-x-term state)))
               (define y-term (unbox (Terminal-y-term state)))
               (define max-cols
@@ -975,32 +973,27 @@
 
 (define ctrl-l (string->key-event "C-l"))
 
-;; Bitwise check - (equal? mod flag) would miss combos like Ctrl+Shift.
 (define (modifier-has? mod flag)
   (= flag (bitwise-and mod flag)))
 
-;; xterm modifier encoding for the trailing CSI param.
 (define (csi-modifier-param mod)
   (+ 1
      (if (modifier-has? mod key-modifier-shift) 1 0)
      (if (modifier-has? mod key-modifier-alt) 2 0)
      (if (modifier-has? mod key-modifier-ctrl) 4 0)))
 
-;; Arrow keys, Home, End.
 (define (send-csi-letter pty mod letter)
   (define p (csi-modifier-param mod))
   (if (= p 1)
       (pty-process-send-command pty (string-append "\x1b;[" letter))
       (pty-process-send-command pty (string-append "\x1b;[1;" (int->string p) letter))))
 
-;; PgUp/PgDn/Insert/Delete and F5-F12.
 (define (send-csi-tilde pty mod n)
   (define p (csi-modifier-param mod))
   (if (= p 1)
       (pty-process-send-command pty (string-append "\x1b;[" n "~"))
       (pty-process-send-command pty (string-append "\x1b;[" n ";" (int->string p) "~"))))
 
-;; F1-F4.
 (define (send-ss3-letter pty mod letter)
   (define p (csi-modifier-param mod))
   (if (= p 1)
@@ -1022,7 +1015,6 @@
     [(= n 11) (send-csi-tilde pty mod "23")]
     [(= n 12) (send-csi-tilde pty mod "24")]))
 
-;; Ctrl-Alt prefixes ESC before the control byte (meta convention).
 (define (send-ctrl-letter pty mod char)
   (define ctrl-byte (integer->char (- (char->integer char) #x60)))
   (if (modifier-has? mod key-modifier-alt)
