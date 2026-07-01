@@ -17,7 +17,6 @@ futures = "0.3.26"
 tokio = { version = "1.29.1", features = ["sync"]}
 log = "0.4.17"
 anyhow = "*"
-wezterm-term = { git = "https://github.com/mattwparas/wezterm.git", branch = "mwp-public-scroll" }
-config = { git = "https://github.com/mattwparas/wezterm.git", branch = "mwp-public-scroll" }
+alacritty_terminal = "0.26.0"
 parking_lot = "*"
 futures-time = "3.0.0"
