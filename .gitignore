@@ -1,4 +1,5 @@
 runtime/
 extensions/
-**/target
+target
 .helix/
+result
