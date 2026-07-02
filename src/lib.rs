@@ -7,17 +7,19 @@ use abi_stable::{
     RMut,
 };
 use alacritty_terminal::{
-    event::{Event, EventListener},
+    event::{Event, EventListener, OnResize, WindowSize},
     grid::Dimensions,
     index::{Column, Line as GridLine, Point},
     term::{
         cell::{Cell, Flags},
         Config, Term,
     },
+    tty::{self, EventedPty, EventedReadWrite, Options, Shell},
     vte::ansi::{Color, NamedColor, Processor, Rgb},
 };
-use portable_pty::{Child, CommandBuilder, NativePtySystem, PtyPair, PtySize, PtySystem};
+use rustix::process::{kill_process, Pid, Signal};
 use std::{
+    io::ErrorKind,
     io::{Read, Write},
     sync::{
         mpsc::{channel, Sender},
@@ -101,31 +103,17 @@ struct PtyProcess {
     cancellation_token_sender: Sender<()>,
     command_sender: Sender<u8>,
     async_receiver: Arc<Mutex<mpsc::UnboundedReceiver<String>>>,
-    pty_system: PtyPair,
-    child: Box<dyn Child + Send + Sync + 'static>,
+    pty: Arc<parking_lot::Mutex<tty::Pty>>,
     writer: WriterWrapper,
 }
 
 use futures::{future::Either, lock::Mutex, FutureExt};
 
-// #[derive(Clone)]
-// struct TermAction(Action);
-
-// impl Custom for TermAction {}
-
-#[derive(Debug)]
-struct PtyProcessError(anyhow::Error);
-impl std::error::Error for PtyProcessError {}
-
-impl std::fmt::Display for PtyProcessError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:#?}", self.0)
-    }
-}
-
 impl PtyProcess {
     pub fn kill(&mut self) {
-        self.child.kill().ok();
+        if let Some(pid) = Pid::from_raw(self.pty.lock().child().id() as i32) {
+            kill_process(pid, Signal::HUP).ok();
+        }
         self.cancellation_token_sender.send(()).ok();
     }
 
@@ -152,15 +140,13 @@ impl PtyProcess {
     // and those bounds checks should be implemented on
     // the conversion
     pub fn resize(&mut self, rows: usize, cols: usize) -> RResult<FFIValue, RBoxError> {
-        match self.pty_system.master.resize(PtySize {
-            rows: rows as u16,
-            cols: cols as u16,
-            pixel_width: 0,
-            pixel_height: 0,
-        }) {
-            Ok(_) => RResult::ROk(FFIValue::Void),
-            Err(e) => RResult::RErr(RBoxError::new(PtyProcessError(e))),
-        }
+        self.pty.lock().on_resize(WindowSize {
+            num_lines: rows as u16,
+            num_cols: cols as u16,
+            cell_width: 0,
+            cell_height: 0,
+        });
+        RResult::ROk(FFIValue::Void)
     }
 
     // Attempt to move the bytes without cloning the heap allocation underneath?
@@ -685,20 +671,37 @@ impl Dimensions for TerminalDimensions {
     }
 }
 
+struct AlacrittyPtyWriter {
+    pty: Arc<parking_lot::Mutex<tty::Pty>>,
+}
+
+impl Write for AlacrittyPtyWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.pty.lock().writer().write(buf)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.pty.lock().writer().flush()
+    }
+}
+
 fn create_native_pty_system(command: String) -> PtyProcess {
-    let pty_system = NativePtySystem::default();
-
-    let pair = pty_system
-        .openpty(PtySize {
-            rows: 24,
-            cols: 80,
-            pixel_width: 0,
-            pixel_height: 0,
-        })
-        .unwrap();
-
-    let cmd = CommandBuilder::new(command);
-    let child = pair.slave.spawn_command(cmd).unwrap();
+    let pty = Arc::new(parking_lot::Mutex::new(
+        tty::new(
+            &Options {
+                shell: Some(Shell::new(command, Vec::new())),
+                ..Options::default()
+            },
+            WindowSize {
+                num_lines: 24,
+                num_cols: 80,
+                cell_width: 0,
+                cell_height: 0,
+            },
+            0,
+        )
+        .unwrap(),
+    ));
 
     // Read the output in another thread.
     // This is important because it is easy to encounter a situation
@@ -708,8 +711,10 @@ fn create_native_pty_system(command: String) -> PtyProcess {
 
     let (cancellation_token_sender, cancellation_token_receiver) = channel::<()>();
 
-    let mut reader = pair.master.try_clone_reader().unwrap();
-    let mut writer = WriterWrapper::new(pair.master.take_writer().unwrap());
+    let reader_pty = Arc::clone(&pty);
+    let mut writer = WriterWrapper::new(Box::new(AlacrittyPtyWriter {
+        pty: Arc::clone(&pty),
+    }));
 
     let writer_clone = writer.clone();
 
@@ -719,16 +724,30 @@ fn create_native_pty_system(command: String) -> PtyProcess {
         let mut read_buffer = [0; 65536];
 
         loop {
-            if let Ok(size) = reader.read(&mut read_buffer) {
-                if size != 0 {
-                    let r = async_sender.send(String::from_utf8_lossy(&read_buffer[..size]).into());
-
-                    if r.is_err() {
+            match reader_pty.lock().reader().read(&mut read_buffer) {
+                Ok(size) => {
+                    if size == 0 {
+                        break;
+                    }
+                    if async_sender
+                        .send(String::from_utf8_lossy(&read_buffer[..size]).into())
+                        .is_err()
+                    {
                         break;
                     }
                 }
-            } else {
-                break;
+                Err(e) => {
+                    if !matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::Interrupted) {
+                        break;
+                    }
+                }
+            }
+
+            {
+                let mut pty = reader_pty.lock();
+                if pty.next_child_event().is_some() {
+                    break;
+                }
             }
 
             match cancellation_token_receiver.try_recv() {
@@ -785,8 +804,7 @@ fn create_native_pty_system(command: String) -> PtyProcess {
         command_sender,
         // output_receiver: rx,
         async_receiver: Arc::new(Mutex::new(async_receiver)),
-        pty_system: pair,
-        child,
+        pty,
         writer: writer_clone,
     }
 }
