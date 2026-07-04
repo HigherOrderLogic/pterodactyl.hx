@@ -18,6 +18,7 @@ use alacritty_terminal::{
     vte::ansi::{Color, NamedColor, Processor, Rgb},
 };
 use async_io::Timer;
+use futures_channel::mpsc::{unbounded, UnboundedReceiver};
 use futures_util::{
     future::{select, Either},
     lock::Mutex as AsyncMutex,
@@ -42,7 +43,6 @@ use steel::{
         IntoFFIVal, RegisterFFIFn, VectorRef,
     },
 };
-use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
 
 // Note: This is no bueno, but we'll need this for now
 // until we figure out how to relax some of the constraints. I'm guessing
@@ -164,7 +164,7 @@ impl PtyProcess {
 
             match select(next, timeout).await {
                 Either::Left((x, _)) => {
-                    if let Some(message) = x {
+                    if let Ok(message) = x {
                         buffer.push_str(&message);
                         RResult::ROk(FFIValue::StringV(buffer.into()))
                     } else if buffer.is_empty() {
@@ -176,7 +176,7 @@ impl PtyProcess {
                 Either::Right((_, fut)) => {
                     if buffer.is_empty() {
                         fut.map(|x| {
-                            if let Some(message) = x {
+                            if let Ok(message) = x {
                                 buffer.push_str(&message);
 
                                 RResult::ROk(FFIValue::StringV(buffer.into()))
@@ -677,7 +677,7 @@ fn create_native_pty_system(command: String) -> PtyProcess {
     // This is important because it is easy to encounter a situation
     // where read/write buffers fill and block either your process
     // or the spawned process.
-    let (async_sender, async_receiver) = unbounded_channel();
+    let (async_sender, async_receiver) = unbounded();
 
     let (cancellation_token_sender, cancellation_token_receiver) = channel();
 
@@ -697,7 +697,7 @@ fn create_native_pty_system(command: String) -> PtyProcess {
                         break;
                     }
                     if async_sender
-                        .send(String::from_utf8_lossy(&read_buffer[..size]).into())
+                        .unbounded_send(String::from_utf8_lossy(&read_buffer[..size]).into())
                         .is_err()
                     {
                         break;
