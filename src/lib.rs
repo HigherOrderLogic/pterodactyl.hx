@@ -18,7 +18,7 @@ use alacritty_terminal::{
     vte::ansi::{Color, NamedColor, Processor, Rgb},
 };
 use async_io::Timer;
-use futures::{
+use futures_util::{
     future::{select, Either},
     lock::Mutex as AsyncMutex,
     pin_mut, FutureExt,
