@@ -112,12 +112,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "anyhow"
-version = "1.0.102"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
-
-[[package]]
 name = "anymap3"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -574,9 +568,9 @@ checksum = "037711b3d59c33004d3856fbdc83b99d4ff37a24768fa1be9ce3538a1cde4393"
 
 [[package]]
 name = "futures-time"
-version = "3.0.1"
+version = "3.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "17f4f4272ec2be25287f1e184066c249b1f6b6d4d982d7c2f56f424096ae64e2"
+checksum = "24076708e74fbd55fb36079acbba19988175140026cc67a878b91b0c3751220b"
 dependencies = [
  "async-channel",
  "async-io",
@@ -1426,7 +1420,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b4acadc255e0d56fe71c09c605ebde51e6009b02d86ae610386f26437c4f91f8"
 dependencies = [
  "abi_stable",
- "anyhow",
  "arc-swap",
  "async-ffi",
  "bigdecimal",
@@ -1525,10 +1518,8 @@ version = "0.1.0"
 dependencies = [
  "abi_stable",
  "alacritty_terminal",
- "anyhow",
  "futures",
  "futures-time",
- "log",
  "parking_lot",
  "rustix",
  "steel-core",
@@ -1615,9 +1606,9 @@ dependencies = [
 
 [[package]]
 name = "tokio"
-version = "1.49.0"
+version = "1.52.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "72a2903cd7736441aac9df9d7688bd0ce48edccaadf181c3b90be801e81d3d86"
+checksum = "8fc7f01b389ac15039e4dc9531aa973a135d7a4135281b12d7c1bc79fd57fffe"
 dependencies = [
  "pin-project-lite",
 ]

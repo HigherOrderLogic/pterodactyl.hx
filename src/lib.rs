@@ -14,17 +14,25 @@ use alacritty_terminal::{
         cell::{Cell, Flags},
         Config, Term,
     },
-    tty::{self, EventedPty, EventedReadWrite, Options, Shell},
+    tty::{new as new_tty, EventedPty, EventedReadWrite, Options, Pty, Shell},
     vte::ansi::{Color, NamedColor, Processor, Rgb},
 };
+use futures::{
+    future::{select, Either},
+    lock::Mutex as AsyncMutex,
+    pin_mut, FutureExt,
+};
+use futures_time::task::sleep as async_sleep;
+use parking_lot::Mutex;
 use rustix::process::{kill_process, Pid, Signal};
 use std::{
-    io::ErrorKind,
-    io::{Read, Write},
+    io::{ErrorKind, Read, Write},
     sync::{
-        mpsc::{channel, Sender},
+        mpsc::{channel, Sender, TryRecvError},
         Arc,
     },
+    thread::{sleep, spawn},
+    time::Duration,
 };
 use steel::{
     declare_module,
@@ -34,12 +42,7 @@ use steel::{
         IntoFFIVal, RegisterFFIFn, VectorRef,
     },
 };
-use tokio::sync::mpsc;
-
-#[derive(Clone)]
-pub(crate) struct WriterWrapper {
-    writer: Arc<parking_lot::Mutex<Box<dyn Write + Send>>>,
-}
+use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
 
 // Note: This is no bueno, but we'll need this for now
 // until we figure out how to relax some of the constraints. I'm guessing
@@ -51,48 +54,43 @@ unsafe impl Sync for PtyProcess {}
 unsafe impl Send for VirtualTerminal {}
 unsafe impl Sync for VirtualTerminal {}
 
-impl WriterWrapper {
-    pub fn new(writer: Box<dyn Write + Send>) -> Self {
-        Self {
-            writer: Arc::new(parking_lot::Mutex::new(writer)),
-        }
-    }
-}
-
-impl std::io::Write for WriterWrapper {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.writer.lock().write(buf)
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        self.writer.lock().flush()
-    }
-}
-
 #[derive(Clone)]
 struct PtyEventListener {
-    writer: WriterWrapper,
+    writer: Option<Arc<Mutex<Pty>>>,
 }
 
 impl EventListener for PtyEventListener {
     fn send_event(&self, event: Event) {
         match event {
             Event::PtyWrite(text) => {
-                let mut writer = self.writer.clone();
-                writer.write_all(text.as_bytes()).unwrap();
-                writer.flush().unwrap();
+                if let Some(pty) = self.writer.as_ref() {
+                    let mut pty = pty.lock();
+                    let writer = pty.writer();
+                    if writer.write_all(text.as_bytes()).is_ok() {
+                        let _ = writer.flush();
+                    }
+                }
             }
             Event::ClipboardLoad(_, formatter) => {
-                let mut writer = self.writer.clone();
-                writer.write_all(formatter("").as_bytes()).unwrap();
-                writer.flush().unwrap();
+                if let Some(pty) = self.writer.as_ref() {
+                    let mut pty = pty.lock();
+                    let writer = pty.writer();
+                    if writer.write_all(formatter("").as_bytes()).is_ok() {
+                        let _ = writer.flush();
+                    }
+                }
             }
             Event::ColorRequest(_, formatter) => {
-                let mut writer = self.writer.clone();
-                writer
-                    .write_all(formatter(Default::default()).as_bytes())
-                    .unwrap();
-                writer.flush().unwrap();
+                if let Some(pty) = self.writer.as_ref() {
+                    let mut pty = pty.lock();
+                    let writer = pty.writer();
+                    if writer
+                        .write_all(formatter(Default::default()).as_bytes())
+                        .is_ok()
+                    {
+                        let _ = writer.flush();
+                    }
+                }
             }
             _ => {}
         }
@@ -102,33 +100,28 @@ impl EventListener for PtyEventListener {
 struct PtyProcess {
     cancellation_token_sender: Sender<()>,
     command_sender: Sender<u8>,
-    async_receiver: Arc<Mutex<mpsc::UnboundedReceiver<String>>>,
-    pty: Arc<parking_lot::Mutex<tty::Pty>>,
-    writer: WriterWrapper,
+    async_receiver: Arc<AsyncMutex<UnboundedReceiver<String>>>,
+    pty: Arc<Mutex<Pty>>,
+    writer: Option<Arc<Mutex<Pty>>>,
 }
-
-use futures::{future::Either, lock::Mutex, FutureExt};
 
 impl PtyProcess {
     pub fn kill(&mut self) {
         if let Some(pid) = Pid::from_raw(self.pty.lock().child().id() as i32) {
-            kill_process(pid, Signal::HUP).ok();
+            let _ = kill_process(pid, Signal::HUP);
         }
-        self.cancellation_token_sender.send(()).ok();
+        let _ = self.cancellation_token_sender.send(());
     }
 
     // TODO: Replace this with a proper result rather than a bool
     pub fn send_command_char(&mut self, command: char) -> bool {
-        self.command_sender
-            .send(command as u8)
-            .map(|_| true)
-            .unwrap_or(false)
+        self.command_sender.send(command as u8).is_ok_and(|_| true)
     }
 
     // TODO: Replace this with a proper result rather than a bool
     pub fn send_command(&mut self, command: &str) -> bool {
         for byte in command.as_bytes() {
-            if let Err(_) = self.command_sender.send(*byte) {
+            if self.command_sender.send(*byte).is_err() {
                 return false;
             }
         }
@@ -165,17 +158,16 @@ impl PtyProcess {
             }
 
             let next = guard.recv();
-            let timeout = futures_time::task::sleep(futures_time::time::Duration::from_millis(2));
+            let timeout = async_sleep(Duration::from_millis(2).into());
 
-            futures::pin_mut!(next);
+            pin_mut!(next);
 
-            match futures::future::select(next, timeout).await {
-                Either::Left((Some(message), _)) => {
-                    buffer.push_str(&message);
-                    RResult::ROk(FFIValue::StringV(buffer.into()))
-                }
-                Either::Left((None, _)) => {
-                    if buffer.is_empty() {
+            match select(next, timeout).await {
+                Either::Left((x, _)) => {
+                    if let Some(message) = x {
+                        buffer.push_str(&message);
+                        RResult::ROk(FFIValue::StringV(buffer.into()))
+                    } else if buffer.is_empty() {
                         RResult::ROk(FFIValue::BoolV(false))
                     } else {
                         RResult::ROk(FFIValue::StringV(buffer.into()))
@@ -244,9 +236,7 @@ fn create_module() -> FFIModule {
             terminal: Term::new(
                 Config::default(),
                 &TerminalDimensions::new(80, 24),
-                PtyEventListener {
-                    writer: WriterWrapper::new(Box::new(std::io::empty())),
-                },
+                PtyEventListener { writer: None },
             ),
             parser: Processor::new(),
             screen_iterator: ScreenCellIterator { x: 0, y: 0 },
@@ -295,7 +285,7 @@ fn create_module() -> FFIModule {
                 ]
                 .into_ffi_val(),
                 Color::Indexed(index) => (index as usize).into_ffi_val(),
-                Color::Named(NamedColor::Foreground) | Color::Named(NamedColor::Background) => {
+                Color::Named(NamedColor::Foreground | NamedColor::Background) => {
                     false.into_ffi_val()
                 }
                 Color::Named(color) => (named_color_index(color) as usize).into_ffi_val(),
@@ -315,8 +305,9 @@ fn create_module() -> FFIModule {
                             true.into_ffi_val()
                         }
                         Color::Indexed(index) => (index as usize).into_ffi_val(),
-                        Color::Named(NamedColor::Foreground)
-                        | Color::Named(NamedColor::Background) => false.into_ffi_val(),
+                        Color::Named(NamedColor::Foreground | NamedColor::Background) => {
+                            false.into_ffi_val()
+                        }
                         Color::Named(color) => (named_color_index(color) as usize).into_ffi_val(),
                     }
                 } else {
@@ -368,18 +359,16 @@ fn create_module() -> FFIModule {
                         if last_cell.is_some() {
                             term.last_cell = last_cell;
                             return true;
-                        } else {
-                            continue;
                         }
+                        continue;
                     }
 
                     if term.screen_iterator.x >= cols && term.screen_iterator.y < rows {
                         term.screen_iterator.x = 0;
                         term.screen_iterator.y += 1;
                         continue;
-                    } else {
-                        return false;
                     }
+                    return false;
                 }
             },
         )
@@ -399,18 +388,16 @@ fn create_module() -> FFIModule {
                             update_cell(&cell, mut_str, bg, fg);
 
                             return true;
-                        } else {
-                            continue;
                         }
+                        continue;
                     }
 
                     if term.screen_iterator.x >= cols && term.screen_iterator.y < rows {
                         term.screen_iterator.x = 0;
                         term.screen_iterator.y += 1;
                         continue;
-                    } else {
-                        return false;
                     }
+                    return false;
                 }
             },
         )
@@ -458,12 +445,10 @@ fn create_module() -> FFIModule {
                             attr.0 = cell.fg;
 
                             return true.into_ffi_val();
-                        } else {
-                            return false.into_ffi_val();
                         }
-                    } else {
                         return false.into_ffi_val();
                     }
+                    return false.into_ffi_val();
                 }
 
                 true.into_ffi_val()
@@ -479,12 +464,12 @@ fn create_module() -> FFIModule {
                         {
                             attr.0 = cell.bg;
 
-                            return true.into_ffi_val();
+                            true.into_ffi_val()
                         } else {
-                            return false.into_ffi_val();
+                            false.into_ffi_val()
                         }
                     } else {
-                        return false.into_ffi_val();
+                        false.into_ffi_val()
                     }
                 } else {
                     false.into_ffi_val()
@@ -501,12 +486,12 @@ fn create_module() -> FFIModule {
                         {
                             attr.0 = cell.fg;
 
-                            return true.into_ffi_val();
+                            true.into_ffi_val()
                         } else {
-                            return false.into_ffi_val();
+                            false.into_ffi_val()
                         }
                     } else {
-                        return false.into_ffi_val();
+                        false.into_ffi_val()
                     }
                 } else {
                     false.into_ffi_val()
@@ -556,12 +541,10 @@ fn create_module() -> FFIModule {
                             attr.0 = cell.fg;
 
                             return true.into_ffi_val();
-                        } else {
-                            return false.into_ffi_val();
                         }
-                    } else {
                         return false.into_ffi_val();
                     }
+                    return false.into_ffi_val();
                 }
 
                 true.into_ffi_val()
@@ -671,23 +654,9 @@ impl Dimensions for TerminalDimensions {
     }
 }
 
-struct AlacrittyPtyWriter {
-    pty: Arc<parking_lot::Mutex<tty::Pty>>,
-}
-
-impl Write for AlacrittyPtyWriter {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.pty.lock().writer().write(buf)
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        self.pty.lock().writer().flush()
-    }
-}
-
 fn create_native_pty_system(command: String) -> PtyProcess {
-    let pty = Arc::new(parking_lot::Mutex::new(
-        tty::new(
+    let pty = Mutex::new(
+        new_tty(
             &Options {
                 shell: Some(Shell::new(command, Vec::new())),
                 ..Options::default()
@@ -701,26 +670,24 @@ fn create_native_pty_system(command: String) -> PtyProcess {
             0,
         )
         .unwrap(),
-    ));
+    )
+    .into();
 
     // Read the output in another thread.
     // This is important because it is easy to encounter a situation
     // where read/write buffers fill and block either your process
     // or the spawned process.
-    let (async_sender, async_receiver) = mpsc::unbounded_channel();
+    let (async_sender, async_receiver) = unbounded_channel();
 
-    let (cancellation_token_sender, cancellation_token_receiver) = channel::<()>();
+    let (cancellation_token_sender, cancellation_token_receiver) = channel();
 
     let reader_pty = Arc::clone(&pty);
-    let mut writer = WriterWrapper::new(Box::new(AlacrittyPtyWriter {
-        pty: Arc::clone(&pty),
-    }));
+    let writer = Some(pty.clone());
 
     let writer_clone = writer.clone();
 
-    std::thread::spawn(move || {
+    spawn(move || {
         // Consume the output from the child
-
         let mut read_buffer = [0; 65536];
 
         loop {
@@ -750,10 +717,12 @@ fn create_native_pty_system(command: String) -> PtyProcess {
                 }
             }
 
-            match cancellation_token_receiver.try_recv() {
-                Ok(_) => break,
-                Err(std::sync::mpsc::TryRecvError::Empty) => {}
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => break,
+            if let Err(e) = cancellation_token_receiver.try_recv() {
+                if matches!(e, TryRecvError::Disconnected) {
+                    break;
+                }
+            } else {
+                break;
             }
         }
     });
@@ -761,7 +730,7 @@ fn create_native_pty_system(command: String) -> PtyProcess {
     // TODO: Perhaps, don't use Strings here and instead just
     // use byte strings directly. However I think Strings work
     // just find for now.
-    let (command_sender, command_receiver) = channel::<u8>();
+    let (command_sender, command_receiver) = channel();
 
     {
         // Obtain the writer.
@@ -782,7 +751,7 @@ fn create_native_pty_system(command: String) -> PtyProcess {
             // lived processes on macOS.
             // I'd love to find a more deterministic solution to
             // this than sleeping.
-            std::thread::sleep(std::time::Duration::from_millis(20));
+            sleep(Duration::from_millis(20));
         }
 
         // This example doesn't need to write anything, but if you
@@ -792,9 +761,11 @@ fn create_native_pty_system(command: String) -> PtyProcess {
         // if !to_write.is_empty() {
         // To avoid deadlock, wrt. reading and waiting, we send
         // data to the stdin of the child in a different thread.
-        std::thread::spawn(move || {
+        spawn(move || {
             while let Ok(command) = command_receiver.recv() {
-                writer.write_all(&[command]).unwrap();
+                if let Some(w) = writer.as_ref() {
+                    w.lock().writer().write_all(&[command]).unwrap();
+                }
             }
         });
     }
@@ -802,8 +773,7 @@ fn create_native_pty_system(command: String) -> PtyProcess {
     PtyProcess {
         cancellation_token_sender,
         command_sender,
-        // output_receiver: rx,
-        async_receiver: Arc::new(Mutex::new(async_receiver)),
+        async_receiver: AsyncMutex::new(async_receiver).into(),
         pty,
         writer: writer_clone,
     }
