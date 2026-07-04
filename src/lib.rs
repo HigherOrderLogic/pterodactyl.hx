@@ -17,12 +17,12 @@ use alacritty_terminal::{
     tty::{new as new_tty, EventedPty, EventedReadWrite, Options, Pty, Shell},
     vte::ansi::{Color, NamedColor, Processor, Rgb},
 };
+use async_io::Timer;
 use futures::{
     future::{select, Either},
     lock::Mutex as AsyncMutex,
     pin_mut, FutureExt,
 };
-use futures_time::task::sleep as async_sleep;
 use parking_lot::Mutex;
 use rustix::process::{kill_process, Pid, Signal};
 use std::{
@@ -158,7 +158,7 @@ impl PtyProcess {
             }
 
             let next = guard.recv();
-            let timeout = async_sleep(Duration::from_millis(2).into());
+            let timeout = Timer::after(Duration::from_millis(2));
 
             pin_mut!(next);
 
