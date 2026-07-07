@@ -928,12 +928,12 @@
     ;; Hide the other terminal
     (set-box! (Terminal-active existing-terminal) #f)
 
-    (if (= (length (TerminalRegistry-terminals *terminal-registry*)) (+ 1 cursor))
-
-        (set-TerminalRegistry-cursor! *terminal-registry* 0)
-        (set-TerminalRegistry-cursor! *terminal-registry* (+ 1 cursor)))
-
-    (show-term (list-ref (TerminalRegistry-terminals *terminal-registry*) (+ 1 cursor)))))
+    (define new-cursor (if (= (length (TerminalRegistry-terminals *terminal-registry*))
+                              (+ 1 cursor))
+                           0
+                           (+ 1 cursor)))
+    (set-TerminalRegistry-cursor! *terminal-registry* new-cursor)
+    (show-term (list-ref (TerminalRegistry-terminals *terminal-registry*) new-cursor))))
 
 (define (term-resize-from-term terminal rows cols)
   (define *vte* (Terminal-*vte* terminal))
