@@ -256,7 +256,8 @@
 
 (define (stop-terminal terminal)
   ;; Kill the underlying process
-  (kill-pty-process! (Terminal-*pty-process* terminal))
+  (when (Terminal-*pty-process* terminal)
+    (kill-pty-process! (Terminal-*pty-process* terminal)))
   (set-box! (Terminal-kill-switch terminal) #t)
   (set-box! (Terminal-focused? terminal) #f)
   (set-box! (Terminal-active terminal) #f)
