@@ -291,6 +291,8 @@
   ;; Update the box to now show this
   (set-box! (Terminal-focused? term) #t)
 
+  (set! stashed-area #f)
+  (set! terminal-area #f)
   (set-editor-clip-right! *default-terminal-cols*)
 
   ;; Mark the terminal as active, only if it isn't active already.
@@ -307,6 +309,12 @@
                                      ;; and decouples the object from the interface required.
                                      (Terminal-renderer term)
                                      (create-component-dict term)))))
+
+(define (deactivate-term! term)
+  (set-box! (Terminal-focused? term) #f)
+  (when (unbox (Terminal-active term))
+    (set-box! (Terminal-active term) #f)
+    (pop-last-component! (Terminal-name term))))
 
 (define *min-term-width* 4)
 (define *min-term-height* 2)
@@ -651,7 +659,7 @@
         (if (equal? (key-event-modifier event) key-modifier-ctrl)
             (begin
 
-              (set-box! (Terminal-active state) #f)
+              (deactivate-term! state)
               (set-editor-clip-right! 0)
 
               event-result/close)
@@ -847,22 +855,20 @@
   (when debug-window
     ;; Kill the underlying process
     (set-box! (Terminal-kill-switch debug-window) #t)
-    (set-box! (Terminal-focused? debug-window) #f)
-    (set-box! (Terminal-active debug-window) #f)
-    (pop-last-component! (Terminal-name debug-window))
+    (deactivate-term! debug-window)
     (set! debug-window #f)))
 
 ;;@doc
 ;; Hides the terminal
 (define (hide-terminal)
   (define cursor (TerminalRegistry-cursor *terminal-registry*))
-  (define term (list-ref (TerminalRegistry-terminals *terminal-registry*) cursor))
 
   (when cursor
-    (set-box! (Terminal-focused? term) #f)
-    (set-box! (Terminal-active term) #f)
+    (define term (list-ref (TerminalRegistry-terminals *terminal-registry*) cursor))
+    (deactivate-term! term)
     (set-editor-clip-right! 0)
-    (pop-last-component! (Terminal-name term))))
+    (set! stashed-area #f)
+    (set! terminal-area #f)))
 
 ;;@doc
 ;; Opens a new terminal
@@ -906,7 +912,7 @@
   ;; Hide the old one
   (when cursor
     (define existing-terminal (list-ref (TerminalRegistry-terminals *terminal-registry*) cursor))
-    (set-box! (Terminal-active existing-terminal) #f)
+    (deactivate-term! existing-terminal)
     (enqueue-thread-local-callback (lambda () void)))
 
   ;; Append the new terminal to the
@@ -926,7 +932,7 @@
 
     (define existing-terminal (list-ref (TerminalRegistry-terminals *terminal-registry*) cursor))
     ;; Hide the other terminal
-    (set-box! (Terminal-active existing-terminal) #f)
+    (deactivate-term! existing-terminal)
 
     (define new-cursor (if (= (length (TerminalRegistry-terminals *terminal-registry*))
                               (+ 1 cursor))
@@ -1028,7 +1034,7 @@
         (if (equal? (key-event-modifier event) key-modifier-ctrl)
             (begin
 
-              (set-box! (Terminal-active state) #f)
+              (deactivate-term! state)
 
               ;; Reset the clipping back to 0 while its not active
               (set-editor-clip-right! 0)
