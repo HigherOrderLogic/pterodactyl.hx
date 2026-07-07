@@ -822,6 +822,7 @@ impl VirtualTerminal {
     // Keep track of the state of the terminal
     fn advance_bytes(&mut self, bytes: &str) {
         self.parser.advance(&mut self.terminal, bytes.as_bytes());
+        self.scroll_up_modifier = 0;
     }
 
     fn advance_bytes_char(&mut self, bytes: char) {
@@ -843,6 +844,9 @@ impl VirtualTerminal {
     // Resizes the terminal
     fn resize(&mut self, rows: usize, cols: usize) {
         self.terminal.resize(TerminalDimensions::new(cols, rows));
+        self.scroll_up_modifier = self
+            .scroll_up_modifier
+            .max(0 - self.terminal.history_size() as i64);
     }
 
     // Get the content to render
@@ -865,7 +869,9 @@ impl VirtualTerminal {
 
         vec![
             pos.column.0.into_ffi_val().unwrap(),
-            (pos.line.0 as isize).into_ffi_val().unwrap(),
+            ((pos.line.0 as i64 - self.scroll_up_modifier) as isize)
+                .into_ffi_val()
+                .unwrap(),
         ]
     }
 
@@ -874,7 +880,7 @@ impl VirtualTerminal {
     }
 
     fn cursor_y(&self) -> isize {
-        self.terminal.grid().cursor.point.line.0 as isize
+        (self.terminal.grid().cursor.point.line.0 as i64 - self.scroll_up_modifier) as isize
     }
 
     fn iteration_bounds(&self) -> (i64, usize) {
