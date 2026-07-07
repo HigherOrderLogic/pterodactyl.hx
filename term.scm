@@ -61,7 +61,7 @@
          term-resize
          (contract/out set-default-terminal-cols! (->/c int? void?))
          (contract/out set-default-terminal-rows! (->/c int? void?))
-         (contract/out set-default-shell! (->/c string? void?))
+         (contract/out set-default-shell! (->/c (or/c string? void?) void?))
          xplr
          open-debug-window
          close-debug-window
@@ -80,20 +80,16 @@
   (set! *default-terminal-cols* cols)
   void)
 
-(define *default-shell* "/bin/zsh")
+(define *default-shell* void)
+
+(define (resolve-shell shell)
+  (if (string? shell)
+      (or (which shell) void)
+      void))
 
 (define (set-default-shell! path-to-shell)
   (set! *default-shell* path-to-shell)
   void)
-
-(unless (which "zsh")
-  (set-default-shell! (which "bash")))
-
-(when (equal? (current-os!) "windows")
-  (set-default-shell! (which "powershell")))
-
-; (define default-style (~> (style) (style-bg Color/Black) (style-fg Color/White)))
-; (define default-style (style))
 
 (define bg-attr (ffi-vector #f #f #f #f))
 (define fg-attr (ffi-vector #f #f #f #f))
@@ -186,7 +182,7 @@
 ;; like to "print" to that wants to be reflected
 ;; as a terminal window could be handled that way.
 (define (make-terminal name shell rows cols on-start-func callback-function)
-  (define *pty-process* (create-native-pty-system! shell))
+  (define *pty-process* (create-native-pty-system! (resolve-shell shell)))
   (define *vte* (virtual-terminal *pty-process*))
 
   (vte/resize *vte* rows cols)
@@ -1105,7 +1101,7 @@
 (define *xplr* #f)
 
 (define (make-xplr shell rows cols)
-  (define *pty-process* (create-native-pty-system! shell))
+  (define *pty-process* (create-native-pty-system! (resolve-shell shell)))
   (define *vte* (virtual-terminal *pty-process*))
 
   (vte/resize *vte* rows cols)

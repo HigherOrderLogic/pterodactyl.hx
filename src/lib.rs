@@ -654,11 +654,18 @@ impl Dimensions for TerminalDimensions {
     }
 }
 
-fn create_native_pty_system(command: String) -> PtyProcess {
+fn create_native_pty_system(command: FFIArg) -> PtyProcess {
+    let shell = match command {
+        FFIArg::StringRef(shell) => Some(shell.to_string()),
+        FFIArg::StringV(shell) => Some(shell.into_string()),
+        FFIArg::Void => None,
+        _ => unreachable!(),
+    }
+    .map(|c| Shell::new(c, Vec::new()));
     let pty = Mutex::new(
         new_tty(
             &Options {
-                shell: Some(Shell::new(command, Vec::new())),
+                shell,
                 ..Options::default()
             },
             WindowSize {
