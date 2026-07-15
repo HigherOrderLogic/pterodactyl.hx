@@ -4,7 +4,7 @@
   rustPlatform,
   fd,
 }: let
-  inherit (stdenv) buildPlatform;
+  inherit (stdenv) hostPlatform;
 in
   rustPlatform.buildRustPackage (finalAttrs: {
     name = "pterodactyl";
@@ -27,7 +27,7 @@ in
       runHook preInstall
 
       fd -t f -e scm -x install -Dm 644 '{}' -t "$out/lib/steel/cogs/${finalAttrs.name}/{//}"
-      for file in target/${buildPlatform.rust.cargoShortTarget}/release/*${buildPlatform.extensions.sharedLibrary}; do
+      for file in target/${hostPlatform.rust.cargoShortTarget}/release/*${hostPlatform.extensions.sharedLibrary}; do
         install -Dm 755 "$file" -t $out/lib/steel/native/
       done
 
