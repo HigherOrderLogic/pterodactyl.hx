@@ -44,7 +44,6 @@
                           vte/cursor-y
                           vte/resize
                           pty-resize!
-                          raw-virtual-terminal
                           vte/scroll-up
                           vte/scroll-down))
 
@@ -62,8 +61,6 @@
          (contract/out set-default-terminal-cols! (->/c int? void?))
          (contract/out set-default-terminal-rows! (->/c int? void?))
          (contract/out set-default-shell! (->/c (or/c string? boolean?) void?))
-         open-debug-window
-         close-debug-window
          hide-terminal)
 
 (define *default-terminal-rows* 45)
@@ -172,12 +169,7 @@
               x-term
               y-term))
 
-;; Construct the terminal - for some use cases
-;; we don't actually need to create a pty. The debug
-;; window for capturing output from steel is an
-;; example of this - but in theory anything that we'd
-;; like to "print" to that wants to be reflected
-;; as a terminal window could be handled that way.
+;; Construct the terminal.
 (define (make-terminal name shell rows cols on-start-func callback-function)
   (define *pty-process* (create-native-pty-system! shell))
   (define *vte* (virtual-terminal *pty-process*))
@@ -728,128 +720,6 @@
 (struct TerminalRegistry (terminals cursor) #:mutable)
 
 (define *terminal-registry* (TerminalRegistry '() #f))
-
-;; For debug output
-(define debug-window #f)
-
-(define (debug-window-event-handler state event)
-  (define char (key-event-char event))
-  (define *vte* (Terminal-*vte* state))
-  (define now (instant/now))
-
-  (cond
-    ;; If the terminal is focused, we are going to
-    ;; possibly capture input
-    [(unbox (Terminal-focused? state))
-     (cond
-       ;; TODO: Combine this with terminal-event-handler
-       [(mouse-event? event) (handle-mouse-event state event *vte*)]
-       [else event-result/ignore])]
-
-    [(mouse-event? event)
-     (cond
-       [(mouse-event-within-area? event (unbox (Terminal-area state)))
-        (case (event-mouse-kind event)
-          ;; Mouse event down - any mouse button
-          [(0 1 2)
-           (set-box! (Terminal-focused? state) #t)
-           event-result/consume]
-          [else event-result/ignore])]
-       [else event-result/ignore])]
-    ;; Close the terminal popup if it is open
-    [(unbox (Terminal-kill-switch state)) event-result/close]
-
-    [else event-result/ignore]))
-
-(define (make-debug-window rows cols on-start-func)
-  (define *vte* (raw-virtual-terminal))
-
-  (vte/resize *vte* rows cols)
-
-  (let ([terminal (Terminal "steel-debug-window"
-                            (position 0 0)
-                            (box cols) ;; Width
-                            (box rows) ;; Height
-                            (box #f) ;; Focused - Are we capturing user input
-                            (box #f) ;; Active - Is the terminal on the screen
-                            #f
-                            *vte*
-                            (style)
-                            (Color/rgb 0 0 0)
-                            (Color/rgb 0 0 0)
-                            ;; More or less a one shot channel. This just says to kill the update
-                            ;; loop that is running in the background.
-                            (box #f)
-                            (mutable-string)
-                            (vte/empty-cell)
-                            (vte/empty-cell)
-                            ;; Don't have an area yet!
-                            (box #f)
-                            ;; Are we currently dragging the terminal?
-                            (box #f)
-                            terminal-render
-                            debug-window-event-handler
-                            #f
-                            (box #f)
-                            (box #f))])
-
-    ;; Call the on start function if relevant. In general, this
-    ;; is going to be `default-on-start-function`, but for
-    ;; other use cases (like launching something like xplr)
-    ;; we might want to go straight in to xplr.
-    (when on-start-func
-      (on-start-func terminal))
-
-    (debug-window-loop terminal)
-
-    terminal))
-
-;; Setup capturing generic displayln stuff
-(define-values (replaced-writer replaced-reader) (make-async-reader-writer))
-
-;; Overwrite the default writer
-(current-output-port replaced-writer)
-
-(define (debug-window-loop term)
-  (define (debug-window-loop-inner)
-    (define *vte* (Terminal-*vte* term))
-    (define *kill-switch* (Terminal-kill-switch term))
-    (if (unbox *kill-switch*)
-        (pop-last-component! (Terminal-name term))
-
-        ;; Change how we do callbacks here - we're reading from
-        ;; the builtin async writer, rather waiting on a pty
-        ;; process response.
-        (helix-await-callback (async-read-line replaced-reader)
-                              (lambda (line)
-                                (when line
-                                  ;; Handle output?
-                                  (vte/advance-bytes-with-carriage-return *vte* line)
-
-                                  ;; Kick off the terminal loop again
-                                  (debug-window-loop-inner))))))
-
-  (debug-window-loop-inner))
-
-(define (open-debug-window)
-  (cond
-    [debug-window (show-term debug-window)]
-    [else
-     (define new-debug-window (make-debug-window *default-terminal-rows* *default-terminal-cols* #f))
-     (set! debug-window new-debug-window)
-
-     ;; TODO: Fix this!
-     (set-TerminalRegistry-terminals! *terminal-registry* (list new-debug-window))
-     (set-TerminalRegistry-cursor! *terminal-registry* 0)
-
-     (show-term new-debug-window)]))
-
-(define (close-debug-window)
-  (when debug-window
-    ;; Kill the underlying process
-    (set-box! (Terminal-kill-switch debug-window) #t)
-    (deactivate-term! debug-window)
-    (set! debug-window #f)))
 
 ;;@doc
 ;; Hides the terminal

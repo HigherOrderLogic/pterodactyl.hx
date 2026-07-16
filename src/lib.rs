@@ -56,40 +56,34 @@ unsafe impl Sync for VirtualTerminal {}
 
 #[derive(Clone)]
 struct PtyEventListener {
-    writer: Option<Arc<Mutex<Pty>>>,
+    pty: Arc<Mutex<Pty>>,
 }
 
 impl EventListener for PtyEventListener {
     fn send_event(&self, event: Event) {
         match event {
             Event::PtyWrite(text) => {
-                if let Some(pty) = self.writer.as_ref() {
-                    let mut pty = pty.lock();
-                    let writer = pty.writer();
-                    if writer.write_all(text.as_bytes()).is_ok() {
-                        let _ = writer.flush();
-                    }
+                let mut pty = self.pty.lock();
+                let writer = pty.writer();
+                if writer.write_all(text.as_bytes()).is_ok() {
+                    let _ = writer.flush();
                 }
             }
             Event::ClipboardLoad(_, formatter) => {
-                if let Some(pty) = self.writer.as_ref() {
-                    let mut pty = pty.lock();
-                    let writer = pty.writer();
-                    if writer.write_all(formatter("").as_bytes()).is_ok() {
-                        let _ = writer.flush();
-                    }
+                let mut pty = self.pty.lock();
+                let writer = pty.writer();
+                if writer.write_all(formatter("").as_bytes()).is_ok() {
+                    let _ = writer.flush();
                 }
             }
             Event::ColorRequest(_, formatter) => {
-                if let Some(pty) = self.writer.as_ref() {
-                    let mut pty = pty.lock();
-                    let writer = pty.writer();
-                    if writer
-                        .write_all(formatter(Default::default()).as_bytes())
-                        .is_ok()
-                    {
-                        let _ = writer.flush();
-                    }
+                let mut pty = self.pty.lock();
+                let writer = pty.writer();
+                if writer
+                    .write_all(formatter(Default::default()).as_bytes())
+                    .is_ok()
+                {
+                    let _ = writer.flush();
                 }
             }
             _ => {}
@@ -102,7 +96,6 @@ struct PtyProcess {
     command_sender: Sender<u8>,
     async_receiver: Arc<AsyncMutex<UnboundedReceiver<String>>>,
     pty: Arc<Mutex<Pty>>,
-    writer: Option<Arc<Mutex<Pty>>>,
 }
 
 impl PtyProcess {
@@ -223,20 +216,8 @@ fn create_module() -> FFIModule {
                 Config::default(),
                 &TerminalDimensions::new(80, 24),
                 PtyEventListener {
-                    writer: pty.writer.clone(),
+                    pty: pty.pty.clone(),
                 },
-            ),
-            parser: Processor::new(),
-            screen_iterator: ScreenCellIterator { x: 0, y: 0 },
-            last_cell: None,
-            scroll_up_modifier: 0,
-        })
-        // Raw virtual terminal!
-        .register_fn("raw-virtual-terminal", || VirtualTerminal {
-            terminal: Term::new(
-                Config::default(),
-                &TerminalDimensions::new(80, 24),
-                PtyEventListener { writer: None },
             ),
             parser: Processor::new(),
             screen_iterator: ScreenCellIterator { x: 0, y: 0 },
@@ -682,9 +663,7 @@ fn create_native_pty_system(command: Option<String>) -> PtyProcess {
     let (cancellation_token_sender, cancellation_token_receiver) = channel();
 
     let reader_pty = Arc::clone(&pty);
-    let writer = Some(pty.clone());
-
-    let writer_clone = writer.clone();
+    let writer_pty = pty.clone();
 
     spawn(move || {
         // Consume the output from the child
@@ -763,9 +742,7 @@ fn create_native_pty_system(command: Option<String>) -> PtyProcess {
         // data to the stdin of the child in a different thread.
         spawn(move || {
             while let Ok(command) = command_receiver.recv() {
-                if let Some(w) = writer.as_ref() {
-                    w.lock().writer().write_all(&[command]).unwrap();
-                }
+                writer_pty.lock().writer().write_all(&[command]).unwrap();
             }
         });
     }
@@ -775,7 +752,6 @@ fn create_native_pty_system(command: Option<String>) -> PtyProcess {
         command_sender,
         async_receiver: AsyncMutex::new(async_receiver).into(),
         pty,
-        writer: writer_clone,
     }
 }
 
