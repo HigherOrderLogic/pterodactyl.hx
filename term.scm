@@ -170,7 +170,7 @@
               y-term))
 
 ;; Construct the terminal.
-(define (make-terminal name shell rows cols on-start-func callback-function)
+(define (make-terminal name shell rows cols callback-function)
   (define *pty-process* (create-native-pty-system! shell))
   (define *vte* (virtual-terminal *pty-process*))
 
@@ -205,20 +205,9 @@
                             (box #f) ;; y-term
                             )])
 
-    ;; Call the on start function if relevant. In general, this
-    ;; is going to be `default-on-start-function`, but for
-    ;; other use cases (like launching something like xplr)
-    ;; we might want to go straight in to xplr.
-    (when on-start-func
-      (on-start-func terminal))
-
     (terminal-loop terminal callback-function)
 
     terminal))
-
-(define (default-on-start-function terminal)
-  (pty-process-send-command (Terminal-*pty-process* terminal)
-                            (string-append "cd " (helix-find-workspace) "\r clear\r")))
 
 (define (terminal-loop term callback-function)
   ;; Kick off the terminal loop, so that we can run this
@@ -748,7 +737,6 @@
                       *default-shell*
                       *default-terminal-rows*
                       *default-terminal-cols*
-                      default-on-start-function
                       vte/advance-bytes))
 
      (set-TerminalRegistry-terminals! *terminal-registry* (list new-term))
@@ -767,7 +755,6 @@
      *default-shell*
      *default-terminal-rows*
      *default-terminal-cols*
-     default-on-start-function
      vte/advance-bytes))
 
   (define cursor (TerminalRegistry-cursor *terminal-registry*))
