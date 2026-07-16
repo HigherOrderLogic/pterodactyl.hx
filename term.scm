@@ -61,7 +61,7 @@
          term-resize
          (contract/out set-default-terminal-cols! (->/c int? void?))
          (contract/out set-default-terminal-rows! (->/c int? void?))
-         (contract/out set-default-shell! (->/c (or/c string? void?) void?))
+         (contract/out set-default-shell! (->/c (or/c string? boolean?) void?))
          open-debug-window
          close-debug-window
          hide-terminal)
@@ -79,15 +79,13 @@
   (set! *default-terminal-cols* cols)
   void)
 
-(define *default-shell* void)
-
-(define (resolve-shell shell)
-  (if (string? shell)
-      (or (which shell) void)
-      void))
+(define *default-shell* #f)
 
 (define (set-default-shell! path-to-shell)
-  (set! *default-shell* path-to-shell)
+  (set! *default-shell*
+        (if (string? path-to-shell)
+            (or (which path-to-shell) #f)
+            #f))
   void)
 
 (define bg-attr (ffi-vector #f #f #f #f))
@@ -181,7 +179,7 @@
 ;; like to "print" to that wants to be reflected
 ;; as a terminal window could be handled that way.
 (define (make-terminal name shell rows cols on-start-func callback-function)
-  (define *pty-process* (create-native-pty-system! (resolve-shell shell)))
+  (define *pty-process* (create-native-pty-system! shell))
   (define *vte* (virtual-terminal *pty-process*))
 
   (vte/resize *vte* rows cols)
