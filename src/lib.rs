@@ -247,53 +247,49 @@ fn create_module() -> FFIModule {
                 .map(|cell| TermCell { cell }.into_ffi_val().unwrap())
                 .collect()
         })
-        .register_fn("vte/cell->fg", |cell: &TermCell| {
-            TermColorAttribute(cell.cell.fg)
-        })
-        .register_fn("vte/cell->bg", |cell: &TermCell| {
-            TermColorAttribute(cell.cell.bg)
-        })
+        .register_fn("vte/cell->fg", |cell: &TermCell| cell_colors(&cell.cell).1)
+        .register_fn("vte/cell->bg", |cell: &TermCell| cell_colors(&cell.cell).0)
         // Get the color attribute, map it to the one that helix uses
         // TODO: Re-use the memory - we should pass in an FFI Vector, and then just reuse it over and over.
         .register_fn(
             "term/color-attribute",
-            |attribute: &TermColorAttribute| match attribute.0 {
-                Color::Spec(Rgb { r, g, b }) => vec![
-                    (r as isize).into_ffi_val().unwrap(),
-                    (g as isize).into_ffi_val().unwrap(),
-                    (b as isize).into_ffi_val().unwrap(),
-                    255isize.into_ffi_val().unwrap(),
-                ]
-                .into_ffi_val(),
-                Color::Indexed(index) => (index as usize).into_ffi_val(),
-                Color::Named(NamedColor::Foreground | NamedColor::Background) => {
-                    false.into_ffi_val()
-                }
-                Color::Named(color) => (named_color_index(color) as usize).into_ffi_val(),
+            |attribute: &TermColorAttribute| match *attribute {
+                TermColorAttribute::DefaultFg => (-1isize).into_ffi_val(),
+                TermColorAttribute::DefaultBg => (-2isize).into_ffi_val(),
+                TermColorAttribute::Color(c) => match c {
+                    Color::Spec(Rgb { r, g, b }) => vec![
+                        (r as isize).into_ffi_val().unwrap(),
+                        (g as isize).into_ffi_val().unwrap(),
+                        (b as isize).into_ffi_val().unwrap(),
+                        255isize.into_ffi_val().unwrap(),
+                    ]
+                    .into_ffi_val(),
+                    Color::Indexed(index) => (index as usize).into_ffi_val(),
+                    Color::Named(color) => (named_color_index(color) as usize).into_ffi_val(),
+                },
             },
         )
         .register_fn(
             "term/color-attribute-set!",
-            |attribute: &TermColorAttribute, shared_vec: FFIArg| {
-                if let FFIArg::VectorRef(VectorRef { mut vec, .. }) = shared_vec {
-                    match attribute.0 {
-                        Color::Spec(Rgb { r, g, b }) => {
+            |attribute: &TermColorAttribute, shared_vec: FFIArg| match *attribute {
+                TermColorAttribute::DefaultFg => (-1isize).into_ffi_val(),
+                TermColorAttribute::DefaultBg => (-2isize).into_ffi_val(),
+                TermColorAttribute::Color(c) => match c {
+                    Color::Spec(Rgb { r, g, b }) => {
+                        if let FFIArg::VectorRef(VectorRef { mut vec, .. }) = shared_vec {
                             vec[0] = FFIValue::IntV(r as isize);
                             vec[1] = FFIValue::IntV(g as isize);
                             vec[2] = FFIValue::IntV(b as isize);
                             vec[3] = FFIValue::IntV(255);
 
                             true.into_ffi_val()
-                        }
-                        Color::Indexed(index) => (index as usize).into_ffi_val(),
-                        Color::Named(NamedColor::Foreground | NamedColor::Background) => {
+                        } else {
                             false.into_ffi_val()
                         }
-                        Color::Named(color) => (named_color_index(color) as usize).into_ffi_val(),
                     }
-                } else {
-                    false.into_ffi_val()
-                }
+                    Color::Indexed(index) => (index as usize).into_ffi_val(),
+                    Color::Named(color) => (named_color_index(color) as usize).into_ffi_val(),
+                },
             },
         )
         .register_fn("vte/cell-width", |cell: &TermCell| cell_width(&cell.cell))
@@ -391,7 +387,7 @@ fn create_module() -> FFIModule {
         // TODO: Add function to mutate in place
         .register_fn("vte/iter-cell-fg", |term: &VirtualTerminal| {
             if let Some(cell) = &term.last_cell {
-                TermColorAttribute(cell.fg).into_ffi_val()
+                cell_colors(cell).1.into_ffi_val()
             } else {
                 false.into_ffi_val()
             }
@@ -399,31 +395,29 @@ fn create_module() -> FFIModule {
         // TODO: Add function to mutate in place
         .register_fn("vte/iter-cell-bg", |term: &VirtualTerminal| {
             if let Some(cell) = &term.last_cell {
-                TermColorAttribute(cell.bg).into_ffi_val()
+                cell_colors(cell).0.into_ffi_val()
             } else {
                 false.into_ffi_val()
             }
         })
         .register_fn("vte/empty-cell", || {
-            TermColorAttribute(Color::Named(NamedColor::Foreground))
+            TermColorAttribute::from(Color::Named(NamedColor::Foreground))
         })
         .register_fn(
             "vte/iter-cell-bg-fg-set-attr!",
             |term: &VirtualTerminal, bg: FFIArg, fg: FFIArg| {
                 if let Some(cell) = &term.last_cell {
+                    let (cell_bg, cell_fg) = cell_colors(cell);
+
                     if let FFIArg::CustomRef(CustomRef { mut custom, .. }) = bg {
-                        if let Some(attr) =
-                            as_underlying_ffi_type::<TermColorAttribute>(custom.get_mut())
-                        {
-                            attr.0 = cell.bg;
+                        if let Some(attr) = as_underlying_ffi_type(custom.get_mut()) {
+                            *attr = cell_bg;
                         }
                     }
 
                     if let FFIArg::CustomRef(CustomRef { mut custom, .. }) = fg {
-                        if let Some(attr) =
-                            as_underlying_ffi_type::<TermColorAttribute>(custom.get_mut())
-                        {
-                            attr.0 = cell.fg;
+                        if let Some(attr) = as_underlying_ffi_type(custom.get_mut()) {
+                            *attr = cell_fg;
 
                             return true.into_ffi_val();
                         }
@@ -440,10 +434,8 @@ fn create_module() -> FFIModule {
             |term: &VirtualTerminal, val: FFIArg| {
                 if let Some(cell) = &term.last_cell {
                     if let FFIArg::CustomRef(CustomRef { mut custom, .. }) = val {
-                        if let Some(attr) =
-                            as_underlying_ffi_type::<TermColorAttribute>(custom.get_mut())
-                        {
-                            attr.0 = cell.bg;
+                        if let Some(attr) = as_underlying_ffi_type(custom.get_mut()) {
+                            *attr = cell_colors(cell).0;
 
                             true.into_ffi_val()
                         } else {
@@ -462,10 +454,8 @@ fn create_module() -> FFIModule {
             |term: &VirtualTerminal, val: FFIArg| {
                 if let Some(cell) = &term.last_cell {
                     if let FFIArg::CustomRef(CustomRef { mut custom, .. }) = val {
-                        if let Some(attr) =
-                            as_underlying_ffi_type::<TermColorAttribute>(custom.get_mut())
-                        {
-                            attr.0 = cell.fg;
+                        if let Some(attr) = as_underlying_ffi_type(custom.get_mut()) {
+                            *attr = cell_colors(cell).1;
 
                             true.into_ffi_val()
                         } else {
@@ -504,22 +494,20 @@ fn create_module() -> FFIModule {
             "vte/iter-cell-bg-fg-set-attr-str!",
             |term: &VirtualTerminal, mut mut_str: RMut<'_, RString>, bg: FFIArg, fg: FFIArg| {
                 if let Some(cell) = &term.last_cell {
+                    let (cell_bg, cell_fg) = cell_colors(cell);
+
                     mut_str.get_mut().clear();
                     mut_str.get_mut().push_str(&cell_string(cell));
 
                     if let FFIArg::CustomRef(CustomRef { mut custom, .. }) = bg {
-                        if let Some(attr) =
-                            as_underlying_ffi_type::<TermColorAttribute>(custom.get_mut())
-                        {
-                            attr.0 = cell.bg;
+                        if let Some(attr) = as_underlying_ffi_type(custom.get_mut()) {
+                            *attr = cell_bg;
                         }
                     }
 
                     if let FFIArg::CustomRef(CustomRef { mut custom, .. }) = fg {
-                        if let Some(attr) =
-                            as_underlying_ffi_type::<TermColorAttribute>(custom.get_mut())
-                        {
-                            attr.0 = cell.fg;
+                        if let Some(attr) = as_underlying_ffi_type(custom.get_mut()) {
+                            *attr = cell_fg;
 
                             return true.into_ffi_val();
                         }
@@ -590,20 +578,45 @@ fn update_cell(cell: &Cell, mut mut_str: RMut<'_, RString>, bg: FFIArg, fg: FFIA
     mut_str.get_mut().clear();
     mut_str.get_mut().push_str(&cell_string(cell));
 
+    let (cell_bg, cell_fg) = cell_colors(cell);
+
     if let FFIArg::CustomRef(CustomRef { mut custom, .. }) = bg {
-        if let Some(attr) = as_underlying_ffi_type::<TermColorAttribute>(custom.get_mut()) {
-            attr.0 = cell.bg;
+        if let Some(attr) = as_underlying_ffi_type(custom.get_mut()) {
+            *attr = cell_bg;
         }
     }
 
     if let FFIArg::CustomRef(CustomRef { mut custom, .. }) = fg {
-        if let Some(attr) = as_underlying_ffi_type::<TermColorAttribute>(custom.get_mut()) {
-            attr.0 = cell.fg;
+        if let Some(attr) = as_underlying_ffi_type(custom.get_mut()) {
+            *attr = cell_fg;
         }
     }
 }
 
-struct TermColorAttribute(Color);
+fn cell_colors(cell: &Cell) -> (TermColorAttribute, TermColorAttribute) {
+    if cell.flags.contains(Flags::INVERSE) {
+        (cell.fg.into(), cell.bg.into())
+    } else {
+        (cell.bg.into(), cell.fg.into())
+    }
+}
+
+#[derive(Clone, Copy)]
+enum TermColorAttribute {
+    DefaultFg,
+    DefaultBg,
+    Color(Color),
+}
+
+impl From<Color> for TermColorAttribute {
+    fn from(color: Color) -> Self {
+        match color {
+            Color::Named(NamedColor::Foreground) => Self::DefaultFg,
+            Color::Named(NamedColor::Background) => Self::DefaultBg,
+            color => Self::Color(color),
+        }
+    }
+}
 
 impl Custom for TermColorAttribute {}
 

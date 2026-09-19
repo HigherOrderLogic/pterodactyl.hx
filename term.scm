@@ -89,8 +89,11 @@
 (define fg-attr (ffi-vector #f #f #f #f))
 
 ;; Save Color around rather than allocate a new one each time
-(define (attribute->color attr bg/fg base-color fg? base-color-fg)
+(define (attribute->color attr bg/fg base-color default-color default-fg default-bg)
   (cond
+    [(and (int? attr) (= attr -1)) default-fg]
+    [(and (int? attr) (= attr -2)) default-bg]
+
     [(int? attr)
      (set-color-indexed! base-color attr)
      base-color]
@@ -103,25 +106,26 @@
                      (ffi-vector-ref bg/fg 2))
      base-color]
 
-    ; base-color
-    [else (if fg? base-color-fg base-color)]))
+    [else default-color]))
 
-(define (cell-fg-bg->style base-style base-color-fg base-color-bg fg bg theme-base-color-fg)
+(define (cell-fg-bg->style base-style base-color-fg base-color-bg fg bg theme-base-color-fg theme-base-color-bg)
   (when base-color-bg
     (set-style-bg! base-style
                    (or (attribute->color (term/color-attribute-set! bg bg-attr)
                                          bg-attr
                                          base-color-bg
-                                         #f
-                                         theme-base-color-fg)
+                                         theme-base-color-bg
+                                         theme-base-color-fg
+                                         theme-base-color-bg)
                        Color/Black)))
 
   (set-style-fg! base-style
                  (or (attribute->color (term/color-attribute-set! fg fg-attr)
                                        fg-attr
                                        base-color-fg
-                                       #t
-                                       theme-base-color-fg)
+                                       theme-base-color-fg
+                                       theme-base-color-fg
+                                       theme-base-color-bg)
                      Color/White)))
 
 (define (for-each func lst)
@@ -471,6 +475,7 @@
     (define cell-fg (Terminal-cell-fg state))
     (define cell-bg (Terminal-cell-bg state))
     (define theme-base-color-fg (style->fg (theme->fg *helix.cx*)))
+    (define theme-base-color-bg (style->bg (theme->bg *helix.cx*)))
 
     ;; Keep a record of the state of the area for the event handler.
     (set-box! (Terminal-area state) block-area)
@@ -496,7 +501,8 @@
                                 color-cursor-bg
                                 cell-fg
                                 cell-bg
-                                theme-base-color-fg)
+                                theme-base-color-fg
+                                theme-base-color-bg)
              (frame-set-string! frame
                                 (+ x-offset (vte/iter-x *vte*))
                                 (+ y-offset (vte/iter-y *vte*))
