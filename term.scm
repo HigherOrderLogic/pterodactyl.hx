@@ -715,6 +715,12 @@
 (struct TerminalRegistry (terminals cursor) #:mutable)
 
 (define *terminal-registry* (TerminalRegistry '() #f))
+(define *terminal-id-counter* 0)
+
+(define (next-terminal-name!)
+  (define name (string-append "Terminal-" (int->string *terminal-id-counter*)))
+  (set! *terminal-id-counter* (+ *terminal-id-counter* 1))
+  name)
 
 ;;@doc
 ;; Hides the terminal
@@ -739,7 +745,7 @@
     [else
      ;; 45 rows, 80 cols
      (define new-term
-       (make-terminal (string-append "Terminal-0")
+       (make-terminal (next-terminal-name!)
                       *default-shell*
                       *default-terminal-rows*
                       *default-terminal-cols*
@@ -756,8 +762,7 @@
   ;; 45 rows, 80 cols
   (define new-term
     (make-terminal
-     (string-append "Terminal-"
-                    (int->string (length (TerminalRegistry-terminals *terminal-registry*))))
+     (next-terminal-name!)
      *default-shell*
      *default-terminal-rows*
      *default-terminal-cols*
